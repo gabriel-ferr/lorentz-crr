@@ -43,7 +43,7 @@ const ε_range = range(0.0, 40.0, 100)
 const init_values = rand(Float64, 3, 1000)
 const init_values_test = rand(Float64, 3, 280)
 #       Learning rate
-const learning_rate = 0.0001
+const learning_rate = 0.001
 #       Epochs of training
 const epochs = 50
 #
