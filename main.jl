@@ -28,24 +28,26 @@ Random.seed!()
 const σ = 10.0
 const β = (8.0 / 3.0)
 const ρ_values = [26.0, 26.5, 27.0, 27.5, 28.0, 28.5]
-
 #       Time interval that DifferentialEquations will use.
-const tspan = (0.0, 100.0)
+#   - 0.0 - 200.0 give us 2559 times with default resolution.
+const tspan = (0.0, 200.0)
+#
 #   =========================== MICROSTATES SETTINGS ============================
 #       The size of our microstates (needs be lower than 8!)
 const n = 2
 #       How I am going to use the Microstates.jl in some loops, define a power vector before it is important xD
 const pvec = power_vector(n)
 #       Threshold value.
-const ε_range = range(0.0, 40.0, 100)
+const ε_range = range(0.0, 40.0, 10)
+#
 #   =========================== FLUX AND MLP         ============================
 #       Initial values for our Lorenz =3
-const init_values = rand(Float64, 3, 1000)
-const init_values_test = rand(Float64, 3, 280)
+const init_values = rand(Float64, 3, 420)
+const init_values_test = rand(Float64, 3, 100)
 #       Learning rate
 const learning_rate = 0.001
 #       Epochs of training
-const epochs = 50
+const epochs = 100
 #
 # =================================================================================================
 #       Lorenz system
@@ -56,10 +58,14 @@ function lorenz!(dr, r, ρ, t)
     dr[3] = x * y - β * z
 end
 # =================================================================================================
-#       I make here a function to generate our data from a initial value.
-function get_probs(init_r, ρ, ε)
+#       Calculate the data previous... because if I don't do it this will use much time =<
+function get_serie(init_r, ρ)
     problem = ODEProblem(lorenz!, init_r, tspan, ρ)
-    serie = solve(problem)[:, :]
+    return (solve(problem)[:, :])[:, 1001:end]
+end
+# =================================================================================================
+#       I make here a function to generate our data from a initial value.
+function get_probs(serie, ε)
     probs, _ = microstates(serie, ε, n; power_aux=pvec, recurrence=Microstates.crd_recurrence)
     return probs
 end
@@ -81,6 +87,9 @@ end
 #       Main function
 function main()
     #
+    #       Number of samples that we are taking.
+    sz = (size(init_values, 2), size(init_values_test, 2))
+    #
     #       Checks if we have a saved progress...
     if (!isfile("status.dat"))
         #
@@ -98,14 +107,32 @@ function main()
         )
         mlp = f64(mlp)
         save_object("network.mlp", mlp)
+
+        data_serie = zeros(Float64, 3, 500, sz[1], length(ρ_values))
+        data_serie_test = zeros(Float64, 3, 500, sz[2], length(ρ_values))
+
+        @showprogress for p in eachindex(ρ_values)
+            Threads.@threads for v in 1:sz[1]
+                teste = get_serie(init_values[:, v], ρ_values[p])[:, 1:500]
+                #println(string("p: ", p, ", v: ", v, " > ", size(teste), " to ", size(data_serie[:, :, v, p])))
+                data_serie[:, :, v, p] .= teste
+                if (v <= sz[2])
+                    data_serie_test[:, :, v, p] .= get_serie((init_values_test[:, v]), ρ_values[p])[:, 1:500]
+                end
+            end
+        end
+
+        save_object("serie.dat", data_serie)
+        save_object("test.dat", data_serie_test)
     end
     #
     #       Load what we need =V
     status = load_object("status.dat")
     accuracy = load_object("accuracy.dat")
+    dataserie = load_object("serie.dat")
+    testserie = load_object("test.dat")
     #
     #       Alloc some memory...
-    sz = (size(init_values, 2), size(init_values_test, 2))
     data = zeros(Float64, 2^(n * n), sz[1], length(ρ_values))
     data_test = zeros(Float64, 2^(n * n), sz[2], length(ρ_values))
     #
@@ -133,16 +160,16 @@ function main()
     end
     #
     #
-    @showprogress for i = status[1]:length(M)
+    @showprogress for i in status[1]:length(M)
         #
         data = zeros(Float64, 2^(n * n), sz[1], length(ρ_values))
         data_test = zeros(Float64, 2^(n * n), sz[2], length(ρ_values))
         #
         for p in eachindex(ρ_values)
-            Threads.@threads for v in eachindex(sz[1])
-                data[:, v, p] .= get_probs(init_values[:, v], ρ_values[p], (ε_range[M[i][1]], ε_range[M[i][2]]))
+            Threads.@threads for v in 1:sz[1]
+                data[:, v, p] .= get_probs(dataserie[:, :, v, p], (ε_range[M[i][1]], ε_range[M[i][2]]))
                 if (v <= sz[2])
-                    data_test[:, v, p] .= get_probs(init_values_test[:, v], ρ_values[p], (ε_range[M[i][1]], ε_range[M[i][2]]))
+                    data_test[:, v, p] .= get_probs(testserie[:, :, v, p], (ε_range[M[i][1]], ε_range[M[i][2]]))
                 end
             end
         end
@@ -155,7 +182,7 @@ function main()
         model = load_object("network.mlp")
         opt = Flux.setup(Flux.Adam(learning_rate), model)
         #
-        loader = Flux.DataLoader((data_temp, labels), batchsize=50, shuffle=true)
+        loader = Flux.DataLoader((data_temp, labels), batchsize=12, shuffle=true)
 
         for epc = 1:epochs
             for (x, y) in loader
@@ -165,7 +192,6 @@ function main()
                 end
                 Flux.update!(opt, model, grads[1])
             end
-
             accuracy[M[i][1], M[i][2], epc] = calc_accuracy(model(data_test_temp), labels_test)
         end
 
@@ -174,4 +200,4 @@ function main()
     end
 end
 # =================================================================================================
-@btime main()
+main()
